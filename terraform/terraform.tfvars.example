@@ -1,0 +1,7 @@
+# Copy this file to terraform.tfvars and edit the values below.
+# terraform.tfvars is git-ignored so secrets / personal values stay local.
+
+prefix      = "aalenproj"        # 3-12 lowercase chars/digits, used in every resource name
+location    = "westeurope"       # Azure region
+environment = "dev"
+owner       = "lastname.firstname@hs-aalen.de"

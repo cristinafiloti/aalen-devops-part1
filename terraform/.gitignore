@@ -1,0 +1,22 @@
+# Terraform state and crash logs
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Local plan files
+*.tfplan
+
+# Sensitive variable files
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Provider plugins and module cache
+.terraform/
+.terraform.lock.hcl
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
