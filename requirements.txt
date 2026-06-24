@@ -1,0 +1,8 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+gunicorn==23.0.0
+jinja2==3.1.4
+python-multipart==0.0.17
+azure-identity==1.19.0
+azure-storage-blob==12.24.0
+azure-keyvault-secrets==4.9.0

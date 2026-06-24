@@ -1,3 +1,8 @@
+###############################################################################
+# providers.tf
+# Provider + (optional) remote-state backend configuration.
+###############################################################################
+
 terraform {
   required_version = ">= 1.6.0"
 
@@ -12,22 +17,18 @@ terraform {
     }
   }
 
-  # OPTIONAL: enable a remote backend once a storage account for state exists.
-  # Until then, Terraform uses the local backend (terraform.tfstate on disk).
-  #
+  # Enable for remote state once a tfstate storage account exists.
   # backend "azurerm" {
   #   resource_group_name  = "tfstate-rg"
   #   storage_account_name = "tfstateXXXXXX"
   #   container_name       = "tfstate"
-  #   key                  = "part1.terraform.tfstate"
+  #   key                  = "part2.terraform.tfstate"
   # }
 }
 
 provider "azurerm" {
   features {
     key_vault {
-      # Required when destroying: purge_protection is disabled by default in
-      # this lab project so that `terraform destroy` actually frees the name.
       purge_soft_delete_on_destroy    = true
       recover_soft_deleted_key_vaults = true
     }

@@ -1,7 +1,12 @@
-# Copy this file to terraform.tfvars and edit the values below.
-# terraform.tfvars is git-ignored so secrets / personal values stay local.
+# Copy this file to terraform.tfvars and edit if needed.
+#
+# IMPORTANT: For Part II, these values MUST match the Part I deployment
+# so that Terraform recognises the existing resources in Azure rather
+# than trying to create new ones.
 
-prefix      = "aalenproj"        # 3-12 lowercase chars/digits, used in every resource name
-location    = "westeurope"       # Azure region
-environment = "dev"
-owner       = "lastname.firstname@hs-aalen.de"
+prefix         = "cristinaer"          # same prefix used in Part I
+suffix         = "suv4"                # suffix that was generated during Part I
+location       = "eastus"              # same region as Part I
+environment    = "dev"
+owner          = "cristinafiloti@outlook.com"
+max_upload_mb  = 10

@@ -1,10 +1,9 @@
 ###############################################################################
 # variables.tf
-# All values that can change between environments live here.
 ###############################################################################
 
 variable "prefix" {
-  description = "Short lowercase prefix used in every resource name. Must be globally unique enough for the storage account."
+  description = "Short lowercase prefix for every resource name."
   type        = string
   default     = "aalenproj"
 
@@ -14,10 +13,25 @@ variable "prefix" {
   }
 }
 
+variable "suffix" {
+  description = <<-EOT
+    4-character random suffix used in every globally-unique resource name
+    (storage account, key vault, web app). For Part II, this is set to the
+    same suffix that was generated during Part I, so that Terraform matches
+    and updates the existing resources instead of creating new ones.
+  EOT
+  type    = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{4}$", var.suffix))
+    error_message = "Suffix must be exactly 4 lowercase letters/digits."
+  }
+}
+
 variable "location" {
   description = "Azure region for all resources."
   type        = string
-  default     = "uaenorth"
+  default     = "westeurope"
 }
 
 variable "environment" {
@@ -33,13 +47,19 @@ variable "owner" {
 }
 
 variable "app_service_sku" {
-  description = "SKU for the App Service Plan. B1 is the cheapest Linux SKU that supports custom containers and managed identity."
+  description = "App Service Plan SKU. B1 is cheap and supports custom containers + MI."
   type        = string
   default     = "B1"
 }
 
 variable "python_version" {
-  description = "Python runtime version for the App Service."
+  description = "Python runtime version on the Linux App Service."
   type        = string
   default     = "3.12"
+}
+
+variable "max_upload_mb" {
+  description = "Maximum upload size in MB enforced by the application."
+  type        = number
+  default     = 10
 }

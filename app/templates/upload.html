@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Upload a file</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Upload a file</h1>
+    <p class="muted">Maximum size {{ max_mb }} MB. Allowed extensions: {{ allowed }}</p>
+  </header>
+
+  <nav>
+    <a class="btn" href="/">← Back to file list</a>
+  </nav>
+
+  <form action="/upload" method="post" enctype="multipart/form-data" class="card">
+    <label>
+      File to upload
+      <input type="file" name="file" required>
+    </label>
+
+    <label>
+      Custom name (optional, no extension)
+      <input type="text" name="custom_name" placeholder="my-photo">
+    </label>
+
+    <button type="submit" class="btn primary">Upload to Storage</button>
+  </form>
+
+  <footer>
+    <p class="muted">The file is streamed directly to the Azure Storage container <code>images</code> using a managed-identity token; no connection string ever reaches this server's process memory.</p>
+  </footer>
+</body>
+</html>

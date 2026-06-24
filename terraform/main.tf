@@ -1,54 +1,37 @@
 ###############################################################################
-# main.tf
-# Resource definitions for Project Work Part I.
+# main.tf  –  Project Work Part II
 #
-# Resources created:
-#   1. Resource Group              – logical container for everything below
-#   2. Storage Account + Container – holds the image blobs (Part II uploads here)
-#   3. Key Vault                   – holds the storage connection string secret
-#   4. Key Vault Secret            – the secret itself (storage primary connection)
-#   5. App Service Plan (Linux)    – compute plan
-#   6. Linux Web App               – the future application host, with system
-#                                    assigned managed identity
-#   7. Role assignments            – grant the App Service MI permission to read
-#                                    secrets from Key Vault and to read/write
-#                                    blobs in the storage account
+# This Terraform definition is designed to be applied ON TOP of the
+# infrastructure already provisioned in Part I (same resource group, same
+# storage account, same key vault, same app service). The "suffix" variable
+# is taken from the Part I deployment so that resource names match exactly
+# and Terraform recognises the existing resources instead of trying to
+# create new ones.
+#
+# Differences from Part I:
+#   - The Linux Web App gets a startup command for gunicorn/uvicorn (FastAPI)
+#   - A new "AppSecret" is added to the Key Vault
+#   - Additional application settings (MAX_UPLOAD_MB, WEBSITES_PORT, etc.)
 ###############################################################################
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-# Random 4-char suffix to keep the storage-account name globally unique.
-resource "random_string" "suffix" {
-  length  = 4
-  upper   = false
-  special = false
-  numeric = true
-}
-
-# Information about the caller (so the deploying user also gets KV access).
 data "azurerm_client_config" "current" {}
 
 locals {
-  # Storage account names: lowercase, alphanumeric only, 3-24 chars.
-  storage_account_name = lower("${var.prefix}st${random_string.suffix.result}")
-
-  # Key vault names: 3-24 chars, alphanumeric + dashes, must start with a letter.
-  key_vault_name = "${var.prefix}-kv-${random_string.suffix.result}"
+  # Fixed suffix from the Part I deployment, passed in via terraform.tfvars.
+  storage_account_name = lower("${var.prefix}st${var.suffix}")
+  key_vault_name       = "${var.prefix}-kv-${var.suffix}"
+  app_name             = "${var.prefix}-app-${var.suffix}"
 
   common_tags = {
     project     = "AalenProjectWork"
-    part        = "I"
+    part        = "II"
     environment = var.environment
     owner       = var.owner
     managed_by  = "terraform"
   }
 }
 
-# -----------------------------------------------------------------------------
-# 1. Resource Group
-# -----------------------------------------------------------------------------
+# ---------- resource group ---------------------------------------------------
 
 resource "azurerm_resource_group" "rg" {
   name     = "${var.prefix}-rg"
@@ -56,9 +39,7 @@ resource "azurerm_resource_group" "rg" {
   tags     = local.common_tags
 }
 
-# -----------------------------------------------------------------------------
-# 2. Storage Account + Blob Container
-# -----------------------------------------------------------------------------
+# ---------- storage account + container --------------------------------------
 
 resource "azurerm_storage_account" "sa" {
   name                     = local.storage_account_name
@@ -68,10 +49,9 @@ resource "azurerm_storage_account" "sa" {
   account_replication_type = "LRS"
   account_kind             = "StorageV2"
 
-  # Security baseline
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
-  public_network_access_enabled   = true # required so the App Service can reach it without VNet integration in Part I
+  public_network_access_enabled   = true
 
   blob_properties {
     versioning_enabled = false
@@ -89,52 +69,55 @@ resource "azurerm_storage_container" "images" {
   container_access_type = "private"
 }
 
-# -----------------------------------------------------------------------------
-# 3. Key Vault (RBAC mode)
-# -----------------------------------------------------------------------------
+# ---------- key vault --------------------------------------------------------
 
 resource "azurerm_key_vault" "kv" {
-  name                = local.key_vault_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  sku_name            = "standard"
-
-  # Use RBAC instead of the legacy access-policy model.
-  rbac_authorization_enabled = true
-
-  purge_protection_enabled   = false # disabled for the lab so we can clean up
-  soft_delete_retention_days = 7
-
+  name                          = local.key_vault_name
+  location                      = azurerm_resource_group.rg.location
+  resource_group_name           = azurerm_resource_group.rg.name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  sku_name                      = "standard"
+  rbac_authorization_enabled    = true
+  purge_protection_enabled      = false
+  soft_delete_retention_days    = 7
   public_network_access_enabled = true
 
   tags = local.common_tags
 }
 
-# The deploying principal needs the "Key Vault Administrator" role so it can
-# create secrets right after the vault is provisioned.
+# Give the deploying user the rights needed to create secrets.
 resource "azurerm_role_assignment" "kv_admin_for_deployer" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Administrator"
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-# -----------------------------------------------------------------------------
-# 4. Key Vault Secret – storage account connection string
-# -----------------------------------------------------------------------------
-
+# Storage connection string secret (kept as fallback; the app prefers MI).
 resource "azurerm_key_vault_secret" "storage_connection_string" {
   name         = "StorageConnectionString"
   value        = azurerm_storage_account.sa.primary_connection_string
   key_vault_id = azurerm_key_vault.kv.id
 
-  # Wait until the role assignment is effective before writing the secret.
   depends_on = [azurerm_role_assignment.kv_admin_for_deployer]
 }
 
-# -----------------------------------------------------------------------------
-# 5. App Service Plan (Linux)
-# -----------------------------------------------------------------------------
+# A second secret demonstrating "sensitive data": an application-wide secret.
+# This is NEW in Part II - illustrates that sensitive application data lives
+# in Key Vault and never appears in code or in app settings.
+resource "random_password" "app_secret" {
+  length  = 32
+  special = false
+}
+
+resource "azurerm_key_vault_secret" "app_secret" {
+  name         = "AppSecret"
+  value        = random_password.app_secret.result
+  key_vault_id = azurerm_key_vault.kv.id
+
+  depends_on = [azurerm_role_assignment.kv_admin_for_deployer]
+}
+
+# ---------- app service plan + linux web app --------------------------------
 
 resource "azurerm_service_plan" "plan" {
   name                = "${var.prefix}-plan"
@@ -146,57 +129,49 @@ resource "azurerm_service_plan" "plan" {
   tags = local.common_tags
 }
 
-# -----------------------------------------------------------------------------
-# 6. Linux Web App (Python) with System-Assigned Managed Identity
-# -----------------------------------------------------------------------------
-
 resource "azurerm_linux_web_app" "app" {
-  name                = "${var.prefix}-app-${random_string.suffix.result}"
+  name                = local.app_name
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_service_plan.plan.location
   service_plan_id     = azurerm_service_plan.plan.id
-
-  https_only = true
+  https_only          = true
 
   site_config {
-    always_on = false # B1 plan does not require always_on for the lab
+    always_on = false
 
     application_stack {
       python_version = var.python_version
     }
+
+    # NEW in Part II: gunicorn + uvicorn worker hosts the FastAPI app.
+    app_command_line = "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 app.main:app"
   }
 
-  # System-assigned managed identity – this is the principal that the App
-  # Service will use to authenticate against Key Vault and Storage.
   identity {
     type = "SystemAssigned"
   }
 
   app_settings = {
-    # Tell the application where the key vault lives. The actual secret is
-    # fetched at runtime by the application code (Part II) using DefaultAzureCredential.
-    "KEY_VAULT_NAME"            = azurerm_key_vault.kv.name
-    "STORAGE_ACCOUNT_NAME"      = azurerm_storage_account.sa.name
-    "IMAGES_CONTAINER_NAME"     = azurerm_storage_container.images.name
-    "WEBSITES_PORT"             = "8000"
+    "KEY_VAULT_NAME"                 = azurerm_key_vault.kv.name
+    "STORAGE_ACCOUNT_NAME"           = azurerm_storage_account.sa.name
+    "IMAGES_CONTAINER_NAME"          = azurerm_storage_container.images.name
+    "MAX_UPLOAD_MB"                  = tostring(var.max_upload_mb)
+    "WEBSITES_PORT"                  = "8000"
     "SCM_DO_BUILD_DURING_DEPLOYMENT" = "true"
+    "ENABLE_ORYX_BUILD"              = "true"
   }
 
   tags = local.common_tags
 }
 
-# -----------------------------------------------------------------------------
-# 7. Role assignments – grant the App Service MI least-privilege access
-# -----------------------------------------------------------------------------
+# ---------- RBAC: app service MI → key vault & storage ----------------------
 
-# (a) Read secrets from the key vault.
 resource "azurerm_role_assignment" "app_kv_secrets_user" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
 }
 
-# (b) Read & write blobs in the storage account.
 resource "azurerm_role_assignment" "app_blob_data_contributor" {
   scope                = azurerm_storage_account.sa.id
   role_definition_name = "Storage Blob Data Contributor"

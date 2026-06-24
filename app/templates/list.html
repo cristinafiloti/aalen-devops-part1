@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Files in {{ container }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Image / File Browser</h1>
+    <p class="muted">Storage account <code>{{ account }}</code> – container <code>{{ container }}</code></p>
+  </header>
+
+  {% if msg %}<div class="banner">{{ msg }}</div>{% endif %}
+
+  <nav>
+    <a class="btn primary" href="/upload">Upload a new file →</a>
+  </nav>
+
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Size</th>
+        <th>Last modified</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td><code>{{ item.name }}</code></td>
+        <td>{{ item.size_kb }} KB</td>
+        <td>{{ item.modified }}</td>
+        <td><a class="btn" href="/download/{{ item.name }}">Download</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">The container is empty. Use the button above to upload your first file.</p>
+  {% endif %}
+
+  <footer>
+    <p class="muted">Aalen Project Work – Part II · FastAPI + Azure Managed Identity</p>
+  </footer>
+</body>
+</html>
