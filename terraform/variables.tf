@@ -13,21 +13,6 @@ variable "prefix" {
   }
 }
 
-variable "suffix" {
-  description = <<-EOT
-    4-character random suffix used in every globally-unique resource name
-    (storage account, key vault, web app). For Part II, this is set to the
-    same suffix that was generated during Part I, so that Terraform matches
-    and updates the existing resources instead of creating new ones.
-  EOT
-  type    = string
-
-  validation {
-    condition     = can(regex("^[a-z0-9]{4}$", var.suffix))
-    error_message = "Suffix must be exactly 4 lowercase letters/digits."
-  }
-}
-
 variable "location" {
   description = "Azure region for all resources."
   type        = string

@@ -2,25 +2,30 @@
 # main.tf  –  Project Work Part II
 #
 # This Terraform definition is designed to be applied ON TOP of the
-# infrastructure already provisioned in Part I (same resource group, same
-# storage account, same key vault, same app service). The "suffix" variable
-# is taken from the Part I deployment so that resource names match exactly
-# and Terraform recognises the existing resources instead of trying to
-# create new ones.
-#
-# Differences from Part I:
-#   - The Linux Web App gets a startup command for gunicorn/uvicorn (FastAPI)
-#   - A new "AppSecret" is added to the Key Vault
-#   - Additional application settings (MAX_UPLOAD_MB, WEBSITES_PORT, etc.)
+# infrastructure already provisioned in Part I. The random_string suffix
+# from Part I is preserved with lifecycle.ignore_changes so the existing
+# resources keep their names.
 ###############################################################################
+
+# Random suffix inherited from Part I. ignore_changes = all means Terraform
+# never regenerates it; the value "suv4" lives in the state file from Part I.
+resource "random_string" "suffix" {
+  length  = 4
+  upper   = false
+  special = false
+  numeric = true
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
 
 data "azurerm_client_config" "current" {}
 
 locals {
-  # Fixed suffix from the Part I deployment, passed in via terraform.tfvars.
-  storage_account_name = lower("${var.prefix}st${var.suffix}")
-  key_vault_name       = "${var.prefix}-kv-${var.suffix}"
-  app_name             = "${var.prefix}-app-${var.suffix}"
+  storage_account_name = lower("${var.prefix}st${random_string.suffix.result}")
+  key_vault_name       = "${var.prefix}-kv-${random_string.suffix.result}"
+  app_name             = "${var.prefix}-app-${random_string.suffix.result}"
 
   common_tags = {
     project     = "AalenProjectWork"
@@ -85,14 +90,12 @@ resource "azurerm_key_vault" "kv" {
   tags = local.common_tags
 }
 
-# Give the deploying user the rights needed to create secrets.
 resource "azurerm_role_assignment" "kv_admin_for_deployer" {
   scope                = azurerm_key_vault.kv.id
   role_definition_name = "Key Vault Administrator"
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-# Storage connection string secret (kept as fallback; the app prefers MI).
 resource "azurerm_key_vault_secret" "storage_connection_string" {
   name         = "StorageConnectionString"
   value        = azurerm_storage_account.sa.primary_connection_string
@@ -101,9 +104,7 @@ resource "azurerm_key_vault_secret" "storage_connection_string" {
   depends_on = [azurerm_role_assignment.kv_admin_for_deployer]
 }
 
-# A second secret demonstrating "sensitive data": an application-wide secret.
-# This is NEW in Part II - illustrates that sensitive application data lives
-# in Key Vault and never appears in code or in app settings.
+# NEW in Part II: a sensitive application secret kept in Key Vault.
 resource "random_password" "app_secret" {
   length  = 32
   special = false
@@ -144,7 +145,7 @@ resource "azurerm_linux_web_app" "app" {
     }
 
     # NEW in Part II: gunicorn + uvicorn worker hosts the FastAPI app.
-    app_command_line = "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 app.main:app"
+ app_command_line = "gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 app.main:app"
   }
 
   identity {

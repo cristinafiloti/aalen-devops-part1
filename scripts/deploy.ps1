@@ -1,91 +1,141 @@
 <#
 .SYNOPSIS
-    Build and deploy the FastAPI application to the Linux App Service.
-
-.DESCRIPTION
-    PowerShell version of deploy.sh — for Windows users who don't have Git Bash.
-    Reads the Terraform outputs, packs the application as a ZIP, deploys it via
-    `az webapp deploy`, and polls /healthz until it returns 200.
-
-.NOTES
-    Prerequisites:
-      - Terraform was applied successfully in ../terraform
-      - You are logged in with `az login` against the right subscription
-      - PowerShell 5.1 or newer (built-in on Windows 10/11)
-
-.EXAMPLE
-    cd C:\path\to\part2_repo
-    .\scripts\deploy.ps1
+    Deploy via WEBSITE_RUN_FROM_PACKAGE (mounts zip read-only, no extract).
 #>
 
 $ErrorActionPreference = "Stop"
 
-# ---- locate repo root --------------------------------------------------------
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir   = Resolve-Path (Join-Path $scriptDir "..")
 Set-Location $rootDir
 
-# ---- check prerequisites -----------------------------------------------------
+if (-not (Get-Command "py" -ErrorAction SilentlyContinue)) {
+    Write-Error "Python launcher (py) not found."
+    exit 1
+}
 foreach ($cmd in @("terraform", "az")) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
-        Write-Error "$cmd CLI not found on PATH"
+        Write-Error "$cmd not found on PATH"
         exit 1
     }
 }
 
-# ---- read Terraform outputs --------------------------------------------------
 Push-Location terraform
 try {
-    $rgName  = (terraform output -raw resource_group_name).Trim()
-    $appName = (terraform output -raw app_service_name).Trim()
-    $appUrl  = (terraform output -raw app_service_url).Trim()
+    $rgName  = (terraform.exe output -raw resource_group_name).Trim()
+    $appName = (terraform.exe output -raw app_service_name).Trim()
+    $appUrl  = (terraform.exe output -raw app_service_url).Trim()
+    $saName  = (terraform.exe output -raw storage_account_name).Trim()
 } finally {
     Pop-Location
 }
 
 Write-Host "Resource Group : $rgName"
 Write-Host "App Service    : $appName"
+Write-Host "Storage Account: $saName"
 Write-Host "Public URL     : $appUrl"
 Write-Host ""
 
-# ---- build ZIP artifact ------------------------------------------------------
-$artifact = Join-Path $env:TEMP "app-$(Get-Random).zip"
-Write-Host "==> Building zip artifact at $artifact"
-
-# Stage only the files App Service needs.
+# ---- build artifact -------------------------------------------------------
 $staging = Join-Path $env:TEMP "app-stage-$(Get-Random)"
+$artifact = Join-Path $env:TEMP "app-$(Get-Random).zip"
 New-Item -ItemType Directory -Path $staging | Out-Null
-try {
-    Copy-Item -Path "app" -Destination $staging -Recurse
-    Copy-Item -Path "requirements.txt" -Destination $staging
 
-    # Remove __pycache__ folders that may have been created locally.
-    Get-ChildItem -Path $staging -Recurse -Directory -Filter "__pycache__" |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "==> Creating virtual environment (Python 3.12)..."
+& py -3.12 -m venv (Join-Path $staging "antenv")
+if ($LASTEXITCODE -ne 0) { Write-Error "venv creation failed"; exit 1 }
 
-    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $artifact -Force
-    $sizeKb = [math]::Round((Get-Item $artifact).Length / 1KB, 1)
-    Write-Host "    artifact size: $sizeKb KB"
-} finally {
-    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
-}
+$pip = Join-Path $staging "antenv\Scripts\pip.exe"
+Write-Host "==> Installing requirements.txt..."
+& $pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
 
-# ---- deploy ------------------------------------------------------------------
-Write-Host "==> Deploying to App Service..."
-az webapp deploy `
+Write-Host "==> Copying application code..."
+Copy-Item -Path "app" -Destination $staging -Recurse
+Copy-Item -Path "requirements.txt" -Destination $staging
+
+Write-Host "==> Converting venv to Linux layout..."
+$antenvDir       = Join-Path $staging "antenv"
+$winSitePackages = Join-Path $antenvDir "Lib\site-packages"
+
+$tempSP = Join-Path $staging "_sp_temp"
+Move-Item -Path $winSitePackages -Destination $tempSP
+
+Remove-Item (Join-Path $antenvDir "Lib")     -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $antenvDir "Scripts") -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $antenvDir "pyvenv.cfg") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $antenvDir "Include") -Recurse -Force -ErrorAction SilentlyContinue
+
+$linuxAntenvLib = Join-Path $antenvDir "lib\python3.12\site-packages"
+New-Item -ItemType Directory -Path $linuxAntenvLib -Force | Out-Null
+Move-Item -Path "$tempSP\*" -Destination $linuxAntenvLib -Force
+Remove-Item $tempSP -Recurse -Force
+
+Write-Host "==> Building zip artifact..."
+Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $artifact -Force -CompressionLevel Optimal
+$sizeMb = [math]::Round((Get-Item $artifact).Length / 1MB, 1)
+Write-Host "    artifact size: $sizeMb MB"
+
+Remove-Item $staging -Recurse -Force
+
+# ---- upload to storage as blob -------------------------------------------
+$containerName = "deploys"
+$blobName = "app-$(Get-Date -Format 'yyyyMMdd-HHmmss').zip"
+
+Write-Host "==> Getting storage account key..."
+$storageKey = az storage account keys list `
+    --resource-group $rgName `
+    --account-name $saName `
+    --query "[0].value" -o tsv
+
+Write-Host "==> Ensuring deploys container exists in $saName..."
+az storage container create `
+    --account-name $saName `
+    --name $containerName `
+    --account-key $storageKey `
+    --output none 2>&1 | Out-Null
+
+Write-Host "==> Uploading ZIP to storage account..."
+az storage blob upload `
+    --account-name $saName `
+    --container-name $containerName `
+    --name $blobName `
+    --file $artifact `
+    --account-key $storageKey `
+    --overwrite `
+    --output none
+
+Write-Host "==> Generating SAS URL (valid 1 year)..."
+$expiry = (Get-Date).AddYears(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
+$sasToken = az storage blob generate-sas `
+    --account-name $saName `
+    --container-name $containerName `
+    --name $blobName `
+    --permissions r `
+    --expiry $expiry `
+    --account-key $storageKey `
+    -o tsv
+
+$sasUrl = "https://$saName.blob.core.windows.net/$containerName/$blobName" + "?" + $sasToken
+
+Write-Host "==> Pointing App Service to the new package..."
+az webapp config appsettings set `
     --resource-group $rgName `
     --name $appName `
-    --src-path $artifact `
-    --type zip `
-    --async false `
-    --restart true
+    --settings "WEBSITE_RUN_FROM_PACKAGE=$sasUrl" "SCM_DO_BUILD_DURING_DEPLOYMENT=false" "ENABLE_ORYX_BUILD=false" `
+    --output none
 
-# ---- smoke test --------------------------------------------------------------
+Remove-Item $artifact -Force -ErrorAction SilentlyContinue
+
+Write-Host "==> Starting app..."
+az webapp start --resource-group $rgName --name $appName --output none
+Start-Sleep -Seconds 30
+
 Write-Host ""
 Write-Host "==> Waiting for /healthz to return 200..."
 $healthUrl = "$appUrl/healthz"
 $ok = $false
-for ($i = 1; $i -le 18; $i++) {
+for ($i = 1; $i -le 36; $i++) {
     try {
         $resp = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
         $code = $resp.StatusCode
@@ -93,24 +143,15 @@ for ($i = 1; $i -le 18; $i++) {
         $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
     }
     Write-Host "    attempt $i -> HTTP $code"
-    if ($code -eq 200) {
-        $ok = $true
-        break
-    }
+    if ($code -eq 200) { $ok = $true; break }
     Start-Sleep -Seconds 10
 }
-
-# ---- cleanup -----------------------------------------------------------------
-Remove-Item $artifact -Force -ErrorAction SilentlyContinue
 
 if ($ok) {
     Write-Host ""
     Write-Host "Deployment succeeded." -ForegroundColor Green
     Write-Host "Open: $appUrl"
-    exit 0
 } else {
     Write-Host ""
-    Write-Error "App did not become healthy in time. Check logs with:"
-    Write-Host "  az webapp log tail -g $rgName -n $appName"
-    exit 1
+    Write-Error "App did not become healthy. Check: az webapp log tail -g $rgName -n $appName"
 }
